@@ -3,3 +3,6 @@ lib/
 *.log
 .DS_Store
 *.tgz
+dist/
+coverage/
+.env
