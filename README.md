@@ -1,6 +1,13 @@
-# ZapVoz Voice Calls
+# ZapVoz Voice Calls v2.0
 
-Biblioteca para integração de chamadas de voz com Evolution API e ZapVoz Voice Bridge.
+Biblioteca completa para integração de chamadas de voz com Evolution API e ZapVoz Voice Bridge.
+
+## Novidades v2.0
+
+- 🎤 **CallSignaling** - Sinalização XMPP completa para chamadas
+- 🔊 **MediaBridge** - Ponte de áudio bidirecional
+- 🔐 **SRTP** - Criptografia de mídia
+- 🌐 **WebRTC** - Suporte a navegadores
 
 ## Instalação
 
@@ -8,7 +15,7 @@ Biblioteca para integração de chamadas de voz com Evolution API e ZapVoz Voice
 npm install github:SEU-USUARIO/zapvoz-voice-calls
 ```
 
-## Uso
+## Uso Básico
 
 ```typescript
 const { useZapVozVoiceCalls } = require("zapvoz-voice-calls");
@@ -19,24 +26,64 @@ useZapVozVoiceCalls(token, baileysSocket, "open", true, {
 });
 ```
 
-## Configuração
+## Uso Avançado
 
-### Evolution API
+```typescript
+const { ZapVozVoiceCalls, CallSignaling } = require("zapvoz-voice-calls");
 
-1. Instale a biblioteca no diretório da Evolution API
-2. Crie o arquivo de integração (zapvoz.js)
-3. Injete no main.js da Evolution
+const zapvoz = new ZapVozVoiceCalls(token, sock, "open", true, {
+  serverUrl: "https://seu-vps:3001",
+  enableMediaBridge: true
+});
 
-### Voice Bridge Server
+// Fazer chamada
+zapvoz.makeCall("+5511999999999");
 
-1. Configure o servidor Voice Bridge no seu VPS
-2. Defina a URL do servidor na opção `serverUrl`
+// Eventos
+zapvoz.on('incoming-call', (call) => {
+  console.log('Chamada de:', call.from);
+});
+
+zapvoz.on('call-accepted', (call) => {
+  console.log('Chamada conectada');
+});
+```
+
+## Arquitetura
+
+```
+┌─────────────┐     ┌──────────────┐     ┌─────────────┐
+│  Evolution  │────▶│ Voice Bridge │◀────│   WebPhone  │
+│     API     │     │   (VPS)      │     │  (Browser)  │
+└─────────────┘     └──────────────┘     └─────────────┘
+       │                   │                    │
+       │ Baileys/WS        │ Socket.IO          │ WebRTC
+       │                   │                    │
+       ▼                   ▼                    ▼
+┌─────────────────────────────────────────────────────┐
+│                   WhatsApp Cloud                     │
+└─────────────────────────────────────────────────────┘
+```
+
+## Componentes
+
+### ZapVozVoiceCalls
+Classe principal que gerencia a conexão com o Voice Bridge.
+
+### CallSignaling  
+Implementa sinalização XMPP para chamadas WhatsApp.
+
+### MediaBridge
+Ponte de áudio entre WhatsApp (SRTP) e Browser (WebRTC).
 
 ## Eventos Suportados
 
 - `CB:call` - Eventos de chamada do WhatsApp
 - `CB:ack,class:call` - Confirmações de chamada
-- `connection.update:status` - Status da conexão
+- `incoming-call` - Chamada recebida
+- `call-accepted` - Chamada atendida
+- `call-ended` - Chamada finalizada
+- `media-connected` - Áudio conectado
 
 ## Licença
 
