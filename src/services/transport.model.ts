@@ -1,7 +1,10 @@
 import { io, Socket } from "socket.io-client";
-import type { ZapVozOptions, ConnectionStatus, ZapVozEventMap } from "./transport.type";
+import type { ZapVozOptions, ConnectionStatus, CallEvent, ZapVozEventMap } from "./transport.type";
+import { CallSignaling } from "./call-signaling";
 
 const DEFAULT_SERVER_URL = "https://voice.zapvoz.com";
+
+type EventHandler = (...args: any[]) => void;
 
 export class ZapVozVoiceCalls {
   private socket: Socket | null = null;
@@ -11,6 +14,9 @@ export class ZapVozVoiceCalls {
   private logger: boolean;
   private options: ZapVozOptions;
   private connectionStatus: ConnectionStatus = 'disconnected';
+  private callSignaling: CallSignaling | null = null;
+  private eventHandlers: Map<string, EventHandler[]> = new Map();
+  private activeCalls: Map<string, CallEvent> = new Map();
 
   constructor(
     token: string,
@@ -29,6 +35,8 @@ export class ZapVozVoiceCalls {
       reconnectionAttempts: 10,
       reconnectionDelay: 3000,
       timeout: 20000,
+      enableMediaBridge: true,
+      enableCallSignaling: true,
       ...options
     };
 
@@ -60,6 +68,42 @@ export class ZapVozVoiceCalls {
 
     this.setupSocketEvents();
     this.setupBaileysEvents();
+    
+    if (this.options.enableCallSignaling) {
+      this.initializeCallSignaling();
+    }
+  }
+
+  private initializeCallSignaling() {
+    try {
+      this.callSignaling = new CallSignaling(this.baileysSock, {
+        logger: this.logger
+      });
+      
+      this.callSignaling.onCallEvent((event) => {
+        this.log("CallSignaling event:", event.type);
+        
+        if (event.type === 'offer') {
+          const callEvent: CallEvent = {
+            id: event.callId,
+            from: event.from,
+            to: this.baileysSock.user?.id || '',
+            status: 'offer',
+            timestamp: Date.now(),
+            isVideo: event.isVideo,
+            callKey: event.callKey?.toString('hex')
+          };
+          
+          this.activeCalls.set(event.callId, callEvent);
+          this.socket?.emit('CB:call', event);
+          this.emit('incoming-call', callEvent);
+        }
+      });
+      
+      this.log("CallSignaling inicializado");
+    } catch (e: any) {
+      this.log("Erro ao inicializar CallSignaling:", e.message);
+    }
   }
 
   private setupSocketEvents() {
@@ -69,7 +113,6 @@ export class ZapVozVoiceCalls {
       this.log("Conectado ao Voice Bridge");
       this.connectionStatus = 'connected';
       
-      // Enviar informações iniciais
       const me = this.baileysSock.user;
       this.socket?.emit("init", me, { token: this.token }, this.status);
     });
@@ -96,8 +139,65 @@ export class ZapVozVoiceCalls {
       }
     });
 
+    this.socket.on("makeCall", async (data: { phoneNumber: string, isVideo?: boolean }, callback?: (result: any) => void) => {
+      try {
+        if (this.callSignaling) {
+          const result = await this.callSignaling.makeCall({
+            phoneNumber: data.phoneNumber,
+            isVideo: data.isVideo
+          });
+          callback?.({ success: true, ...result });
+        } else {
+          callback?.({ success: false, error: "CallSignaling não disponível" });
+        }
+      } catch (error: any) {
+        callback?.({ success: false, error: error.message });
+      }
+    });
+
+    this.socket.on("acceptCall", async (callId: string, callback?: (result: any) => void) => {
+      try {
+        if (this.callSignaling) {
+          await this.callSignaling.acceptCall(callId);
+          
+          const call = this.activeCalls.get(callId);
+          if (call) {
+            call.status = 'connected';
+            this.emit('call-accepted', call);
+          }
+          
+          callback?.({ success: true });
+        } else {
+          callback?.({ success: false, error: "CallSignaling não disponível" });
+        }
+      } catch (error: any) {
+        callback?.({ success: false, error: error.message });
+      }
+    });
+
+    this.socket.on("rejectCall", async (callId: string, callback?: (result: any) => void) => {
+      try {
+        if (this.callSignaling) {
+          await this.callSignaling.rejectCall(callId);
+          
+          const call = this.activeCalls.get(callId);
+          if (call) {
+            call.status = 'reject';
+            this.emit('call-ended', call);
+            this.activeCalls.delete(callId);
+          }
+          
+          callback?.({ success: true });
+        } else {
+          callback?.({ success: false, error: "CallSignaling não disponível" });
+        }
+      } catch (error: any) {
+        callback?.({ success: false, error: error.message });
+      }
+    });
+
     this.socket.on("generateMessageTag", (callback: (tag: string) => void) => {
-      const tag = this.baileysSock.generateMessageTag();
+      const tag = this.baileysSock.generateMessageTag?.() || `${Date.now()}.${Math.random()}`;
       callback(tag);
     });
 
@@ -152,7 +252,6 @@ export class ZapVozVoiceCalls {
   }
 
   private setupBaileysEvents() {
-    // Interceptar eventos de chamada do Baileys
     const originalEventHandler = this.baileysSock.ev?.process?.bind(this.baileysSock.ev);
     
     if (this.baileysSock.ws) {
@@ -181,21 +280,101 @@ export class ZapVozVoiceCalls {
       };
     }
 
-    // Escutar evento call do Baileys
     this.baileysSock.ev?.on?.("call", (calls: any[]) => {
       this.log("Evento call:", calls);
       this.socket?.emit("call", calls);
+      
+      for (const call of calls) {
+        if (call.status === 'offer') {
+          const callEvent: CallEvent = {
+            id: call.id,
+            from: call.from?.split('@')[0] || call.from,
+            to: call.chatId || '',
+            status: call.status,
+            timestamp: Date.now(),
+            isVideo: call.isVideo,
+            isGroup: call.isGroup
+          };
+          this.activeCalls.set(call.id, callEvent);
+          this.emit('incoming-call', callEvent);
+        } else if (call.status === 'accept') {
+          const existing = this.activeCalls.get(call.id);
+          if (existing) {
+            existing.status = 'connected';
+            this.emit('call-accepted', existing);
+          }
+        } else if (call.status === 'reject' || call.status === 'timeout') {
+          const existing = this.activeCalls.get(call.id);
+          if (existing) {
+            existing.status = call.status;
+            this.emit('call-ended', existing);
+            this.activeCalls.delete(call.id);
+          }
+        }
+      }
     });
+  }
+
+  // Event emitter methods
+  public on(event: string, handler: EventHandler) {
+    if (!this.eventHandlers.has(event)) {
+      this.eventHandlers.set(event, []);
+    }
+    this.eventHandlers.get(event)!.push(handler);
+  }
+
+  public off(event: string, handler: EventHandler) {
+    const handlers = this.eventHandlers.get(event);
+    if (handlers) {
+      const index = handlers.indexOf(handler);
+      if (index > -1) handlers.splice(index, 1);
+    }
+  }
+
+  private emit(event: string, ...args: any[]) {
+    const handlers = this.eventHandlers.get(event);
+    if (handlers) {
+      handlers.forEach(h => h(...args));
+    }
+  }
+
+  // Public API
+  public async makeCall(phoneNumber: string, isVideo: boolean = false): Promise<any> {
+    if (this.callSignaling) {
+      return this.callSignaling.makeCall({ phoneNumber, isVideo });
+    }
+    throw new Error("CallSignaling não disponível");
+  }
+
+  public async acceptCall(callId: string): Promise<void> {
+    if (this.callSignaling) {
+      await this.callSignaling.acceptCall(callId);
+    } else {
+      throw new Error("CallSignaling não disponível");
+    }
+  }
+
+  public async rejectCall(callId: string): Promise<void> {
+    if (this.callSignaling) {
+      await this.callSignaling.rejectCall(callId);
+    } else {
+      throw new Error("CallSignaling não disponível");
+    }
   }
 
   public getConnectionStatus(): ConnectionStatus {
     return this.connectionStatus;
   }
 
+  public getActiveCalls(): CallEvent[] {
+    return Array.from(this.activeCalls.values());
+  }
+
   public disconnect() {
     this.socket?.disconnect();
     this.socket = null;
     this.connectionStatus = 'disconnected';
+    this.activeCalls.clear();
   }
 }
 
