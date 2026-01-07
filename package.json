@@ -1,0 +1,28 @@
+{
+  "name": "zapvoz-voice-calls",
+  "version": "1.0.0",
+  "description": "Integração de chamadas de voz para ZapVoz - Biblioteca para conectar Evolution API ao Voice Bridge",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "prepublish": "npm run build"
+  },
+  "keywords": ["zapvoz", "voice", "calls", "whatsapp", "evolution", "baileys"],
+  "author": "ZapVoz",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zapvoz/zapvoz-voice-calls.git"
+  },
+  "dependencies": {
+    "socket.io-client": "^4.7.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.11",
+    "typescript": "^5.5.3"
+  },
+  "peerDependencies": {
+    "baileys": "^6.0.0"
+  }
+}
